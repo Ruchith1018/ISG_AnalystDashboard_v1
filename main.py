@@ -1,16 +1,16 @@
+import os
+import uuid
+
 import dash
 from dash import html, Input, Output, State, dcc
 import dash_ag_grid as dag
 import pandas as pd
 from sqlalchemy import create_engine, text
-
-import os
 from dotenv import load_dotenv
 
 load_dotenv()
 
 # ------------------ DB CONFIG ------------------
-
 ps_host = os.environ["PS_HOST"]
 ps_port = int(os.environ["PS_PORT"])
 ps_user = os.environ["PS_USER"]
@@ -19,7 +19,7 @@ ps_dbname = os.environ["PS_DBNAME"]
 
 engine = create_engine(
     f"postgresql+psycopg2://{ps_user}:{ps_password}@{ps_host}:{ps_port}/{ps_dbname}",
-    pool_pre_ping=True
+    pool_pre_ping=True,
 )
 
 TABLE_NAME = "news"
@@ -44,25 +44,38 @@ def clean_value(x):
         return None
     return x
 
+
 def normalize_value(v):
     """Normalize types to match DB types"""
-    if pd.isna(v):
+    if v is None:
         return None
+    try:
+        if pd.isna(v):
+            return None
+    except Exception:
+        pass
+
+    # If UUID comes in, compare as string
+    if isinstance(v, uuid.UUID):
+        return str(v)
+
     if isinstance(v, str):
+        s = v.strip()
         # Convert booleans
-        if v.lower() == "true":
+        if s.lower() == "true":
             return True
-        if v.lower() == "false":
+        if s.lower() == "false":
             return False
-        # Convert integers if numeric string
+        # Convert integers/floats if numeric string
         try:
-            if "." in v:
-                return float(v)
-            else:
-                return int(v)
-        except:
-            return v
+            if "." in s:
+                return float(s)
+            return int(s)
+        except Exception:
+            return s
+
     return v
+
 
 def rows_differ(row1, row2, cols):
     for col in cols:
@@ -73,16 +86,29 @@ def rows_differ(row1, row2, cols):
     return False
 
 
+def uuid_to_str_df(df: pd.DataFrame) -> pd.DataFrame:
+    """Convert any Python uuid.UUID objects in object columns to strings (JSON-safe)."""
+    df = df.copy()
+    for c in df.columns:
+        if df[c].dtype == "object":
+            df[c] = df[c].apply(lambda x: str(x) if isinstance(x, uuid.UUID) else x)
+    return df
+
 
 # ------------------ LOAD DATA ------------------
 def load_news():
-    return pd.read_sql(f"SELECT * FROM {TABLE_NAME} LIMIT 500", engine)
+    q = text(f"SELECT * FROM {TABLE_NAME} LIMIT 500")
+    with engine.connect() as conn:
+        df = pd.read_sql_query(q, conn)
+    return uuid_to_str_df(df)
+
 
 def load_categories():
-    return pd.read_sql(
-        "SELECT category_id, category_name, risk_level, risk_rating FROM categories",
-        engine
-    )
+    q = text("SELECT category_id, category_name, risk_level, risk_rating FROM categories")
+    with engine.connect() as conn:
+        df = pd.read_sql_query(q, conn)
+    return uuid_to_str_df(df)
+
 
 df = load_news()
 cat_df = load_categories()
@@ -101,19 +127,51 @@ CAT_LOOKUP = {
 
 # ------------------ COLUMN ORDER ------------------
 COLUMN_ORDER = [
-    "company_name","date","headline","content","url",
-    "is_duplicate","analyst_dup","qc_tags","analyst_tag",
-    "category_name","analyst_cat","risk_rating","risk_level",
-    "analyst_risk_level","analyst_approval","analyst_remark",
-    "analyst_cat_id","filtered_content","processed",
-    "news_id","company_id","ads_removed_flag","removed_text",
-    "dup_group_id","cat_reason","tag_reason","category_id",
-    "orbis_id","locations","source","ingestion_date",
-    "created_at","lang","cutoff_time","blogpost_links",
-    "valid","url_status","url_status_code"
+    "company_name",
+    "date",
+    "headline",
+    "content",
+    "url",
+    "is_duplicate",
+    "analyst_dup",
+    "qc_tags",
+    "analyst_tag",
+    "category_name",
+    "analyst_cat",
+    "risk_rating",
+    "risk_level",
+    "analyst_risk_level",
+    "analyst_approval",
+    "analyst_remark",
+    "analyst_cat_id",
+    "filtered_content",
+    "processed",
+    "news_id",
+    "company_id",
+    "ads_removed_flag",
+    "removed_text",
+    "dup_group_id",
+    "cat_reason",
+    "tag_reason",
+    "category_id",
+    "orbis_id",
+    "locations",
+    "source",
+    "ingestion_date",
+    "created_at",
+    "lang",
+    "cutoff_time",
+    "blogpost_links",
+    "valid",
+    "url_status",
+    "url_status_code",
 ]
 
 df = df[[c for c in COLUMN_ORDER if c in df.columns]]
+
+# Ensure unique col exists and is JSON-safe
+if UNIQUE_COL in df.columns:
+    df[UNIQUE_COL] = df[UNIQUE_COL].astype(str)
 
 # ------------------ EDITABLE COLS ------------------
 EDITABLE_COLS = {
@@ -127,7 +185,6 @@ EDITABLE_COLS = {
 
 # ------------------ COLUMN DEFINITIONS ------------------
 column_defs = []
-
 for col in df.columns:
     col_def = {
         "field": col,
@@ -144,41 +201,53 @@ for col in df.columns:
         }
 
     if col in ("analyst_dup", "analyst_approval"):
-        col_def.update({
-            "cellEditor": "agSelectCellEditor",
-            "cellEditorParams": {"values": [True, False]},
-            "cellStyle": {
-                "styleConditions": [
-                    {"condition": "params.value === true",
-                     "style": {"backgroundColor": "#bbf7d0"}},
-                    {"condition": "params.value === false",
-                     "style": {"backgroundColor": "#fecaca"}},
-                    {"condition": "params.value == null",
-                     "style": {"backgroundColor": "#fff3c4",
-                               "borderLeft": "3px solid #f59e0b"}},
-                ]
+        col_def.update(
+            {
+                "cellEditor": "agSelectCellEditor",
+                "cellEditorParams": {"values": [True, False]},
+                "cellStyle": {
+                    "styleConditions": [
+                        {
+                            "condition": "params.value === true",
+                            "style": {"backgroundColor": "#bbf7d0"},
+                        },
+                        {
+                            "condition": "params.value === false",
+                            "style": {"backgroundColor": "#fecaca"},
+                        },
+                        {
+                            "condition": "params.value == null",
+                            "style": {
+                                "backgroundColor": "#fff3c4",
+                                "borderLeft": "3px solid #f59e0b",
+                            },
+                        },
+                    ]
+                },
             }
-        })
+        )
 
     if col == "analyst_cat":
-        col_def.update({
-            "cellEditor": "agSelectCellEditor",
-            "cellEditorParams": {"values": CATEGORY_OPTIONS},
-            "valueSetter": {
-                "function": """
-                function(params) {
-                    const cat = params.newValue;
-                    if (!cat || !window.catLookup[cat]) return false;
+        col_def.update(
+            {
+                "cellEditor": "agSelectCellEditor",
+                "cellEditorParams": {"values": CATEGORY_OPTIONS},
+                "valueSetter": {
+                    "function": """
+                    function(params) {
+                        const cat = params.newValue;
+                        if (!cat || !window.catLookup[cat]) return false;
 
-                    params.data.analyst_cat = cat;
-                    params.data.analyst_risk_level = window.catLookup[cat].risk_level;
-                    params.data.risk_rating = window.catLookup[cat].risk_rating;
-                    params.data.analyst_cat_id = window.catLookup[cat].category_id;
-                    return true;
-                }
-                """
+                        params.data.analyst_cat = cat;
+                        params.data.analyst_risk_level = window.catLookup[cat].risk_level;
+                        params.data.risk_rating = window.catLookup[cat].risk_rating;
+                        params.data.analyst_cat_id = window.catLookup[cat].category_id;
+                        return true;
+                    }
+                    """
+                },
             }
-        })
+        )
 
     column_defs.append(col_def)
 
@@ -189,10 +258,9 @@ app.layout = html.Div(
     style={"padding": "15px"},
     children=[
         html.H3("📰 News Analyst QC Dashboard"),
-
         dag.AgGrid(
             id="news-grid",
-            rowData=df.to_dict("records"),
+            rowData=df.to_dict("records"),  # now JSON-safe (UUIDs converted to str)
             columnDefs=column_defs,
             dashGridOptions={
                 "pagination": True,
@@ -203,25 +271,28 @@ app.layout = html.Div(
                 },
                 "getRowStyle": {
                     "styleConditions": [
-                        {"condition": "params.node.rowIndex % 2 === 0",
-                         "style": {"backgroundColor": "#e5e7eb"}},
-                        {"condition": "params.node.rowIndex % 2 === 1",
-                         "style": {"backgroundColor": "#ffffff"}},
+                        {
+                            "condition": "params.node.rowIndex % 2 === 0",
+                            "style": {"backgroundColor": "#e5e7eb"},
+                        },
+                        {
+                            "condition": "params.node.rowIndex % 2 === 1",
+                            "style": {"backgroundColor": "#ffffff"},
+                        },
                     ]
                 },
             },
             style={"height": "78vh", "width": "100%"},
         ),
-
         html.Br(),
-
         dcc.Loading(
             id="saving-loader",
             type="circle",
             fullscreen=True,
-            children=html.Button("💾 Save Changes", id="save-btn", style={"fontSize": "16px"})
+            children=html.Button(
+                "💾 Save Changes", id="save-btn", style={"fontSize": "16px"}
+            ),
         ),
-
         # -------- POPUP --------
         html.Div(
             id="popup",
@@ -239,11 +310,14 @@ app.layout = html.Div(
                 "textAlign": "center",
             },
             children=[
-                html.Div(id="popup-msg", style={"fontSize": "20px", "marginBottom": "20px"}),
-                html.Button("OK", id="close-popup", style={"fontSize": "16px"})
-            ]
-        )
-    ]
+                html.Div(
+                    id="popup-msg",
+                    style={"fontSize": "20px", "marginBottom": "20px"},
+                ),
+                html.Button("OK", id="close-popup", style={"fontSize": "16px"}),
+            ],
+        ),
+    ],
 )
 
 # ------------------ SAVE CALLBACK ------------------
@@ -253,29 +327,51 @@ app.layout = html.Div(
     Input("save-btn", "n_clicks"),
     Input("close-popup", "n_clicks"),
     State("news-grid", "rowData"),
-    prevent_initial_call=True
+    prevent_initial_call=True,
 )
 def save_changes(save_clicks, close_clicks, rows):
-
     if dash.callback_context.triggered_id == "close-popup":
         return {"display": "none"}, ""
 
-    new_df = pd.DataFrame(rows).set_index(UNIQUE_COL)
+    if not rows:
+        return {"display": "block"}, "ℹ️ No rows received"
 
-    base_df = pd.read_sql(
-        """
-        SELECT news_id, analyst_dup, analyst_cat, analyst_cat_id,
-               analyst_risk_level, analyst_tag,
-               analyst_approval, analyst_remark
-        FROM news
-        """,
-        engine
-    ).set_index(UNIQUE_COL)
+    new_df = pd.DataFrame(rows)
+    if UNIQUE_COL not in new_df.columns:
+        return {"display": "block"}, f"❌ Missing unique column: {UNIQUE_COL}"
+
+    # Ensure index is string (grid sends strings)
+    new_df[UNIQUE_COL] = new_df[UNIQUE_COL].astype(str)
+    new_df = new_df.set_index(UNIQUE_COL)
+
+    # Load base data with UUIDs cast to text in SQL so types match
+    with engine.connect() as conn:
+        base_df = pd.read_sql_query(
+            text(
+                """
+                SELECT
+                    news_id::text AS news_id,
+                    analyst_dup,
+                    analyst_cat,
+                    analyst_cat_id::text AS analyst_cat_id,
+                    analyst_risk_level,
+                    analyst_tag,
+                    analyst_approval,
+                    analyst_remark
+                FROM news
+                """
+            ),
+            conn,
+        ).set_index(UNIQUE_COL)
 
     editable_cols = [
-        "analyst_dup","analyst_cat","analyst_cat_id",
-        "analyst_risk_level","analyst_tag",
-        "analyst_approval","analyst_remark"
+        "analyst_dup",
+        "analyst_cat",
+        "analyst_cat_id",
+        "analyst_risk_level",
+        "analyst_tag",
+        "analyst_approval",
+        "analyst_remark",
     ]
 
     # ---- robust diff ----
@@ -293,16 +389,34 @@ def save_changes(save_clicks, close_clicks, rows):
 
     # ---- save only changed rows ----
     with engine.begin() as conn:
-        for news_id in diff_ids:
-            row = new_df.loc[[news_id]].iloc[0]
-            data = {c: clean_value(row[c]) for c in editable_cols}
-            data["news_id"] = news_id
+        for news_id_str in diff_ids:
+            row = new_df.loc[[news_id_str]].iloc[0]
+            data = {c: clean_value(row.get(c)) for c in editable_cols}
 
-            if data["analyst_risk_level"] is not None:
-                data["analyst_risk_level"] = int(data["analyst_risk_level"])
+            # Convert news_id back to UUID for DB WHERE clause
+            try:
+                data["news_id"] = uuid.UUID(news_id_str)
+            except Exception:
+                # If for some reason it's already UUID-like or not valid, keep as string
+                data["news_id"] = news_id_str
+
+            # Normalize numeric risk level
+            if data.get("analyst_risk_level") is not None:
+                try:
+                    data["analyst_risk_level"] = int(float(data["analyst_risk_level"]))
+                except Exception:
+                    pass
+
+            # analyst_cat_id might be UUID string -> cast to UUID if present
+            if data.get("analyst_cat_id") is not None:
+                try:
+                    data["analyst_cat_id"] = uuid.UUID(str(data["analyst_cat_id"]))
+                except Exception:
+                    pass
 
             conn.execute(
-                text("""
+                text(
+                    """
                     UPDATE news SET
                         analyst_dup = :analyst_dup,
                         analyst_cat = :analyst_cat,
@@ -312,11 +426,13 @@ def save_changes(save_clicks, close_clicks, rows):
                         analyst_approval = :analyst_approval,
                         analyst_remark = :analyst_remark
                     WHERE news_id = :news_id
-                """),
-                data
+                    """
+                ),
+                data,
             )
 
     return {"display": "block"}, f"✅ Saved {len(diff_ids)} records"
+
 
 # ------------------ RUN ------------------
 if __name__ == "__main__":

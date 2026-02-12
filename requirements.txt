@@ -1,0 +1,6 @@
+dash-ag-grid==32.3.4
+dash==3.3.0
+pandas==2.2.3
+sqlalchemy==1.4.54
+dotenv
+psycopg2
